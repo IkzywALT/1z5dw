@@ -311,7 +311,7 @@ local ICON_ALIASES = {
 	gear = "settings",
 	cog = "settings",
 }
-local ICON_SIZE = 24 -- matches the 24px sprite cells 1:1 (sharpest); override per call if needed
+local ICON_SIZE = 30 -- matches the 24px sprite cells 1:1 (sharpest); override per call if needed
 
 local iconSource = nil
 local iconLoadAttempted = false

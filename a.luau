@@ -311,7 +311,7 @@ local ICON_ALIASES = {
 	gear = "settings",
 	cog = "settings",
 }
-local ICON_SIZE = 26 -- one consistent size for every icon (can be overridden per call)
+local ICON_SIZE = 24 -- matches the 24px sprite cells 1:1 (sharpest); override per call if needed
 
 local iconSource = nil
 local iconLoadAttempted = false
@@ -537,7 +537,9 @@ function Section:CreateToggle(config)
 	local state = config.Default == true
 	local callback = config.Callback or function() end
 	local hasKeybind = config.Keybind ~= false
-	local boundKey = config.Key
+	-- Keybind: false = hide the box, true/nil = show it unbound, Enum.KeyCode = show it pre-bound.
+	-- (Key is kept as an alias for a pre-bound key.)
+	local boundKey = typeof(config.Keybind) == "EnumItem" and config.Keybind or config.Key
 	local listening = false
 
 	local row = CreateRow(self, Layout.RowHeight, true, maid)
@@ -1184,12 +1186,11 @@ function Tab:_SetSelected(selected, instant)
 		Apply(self._button, { BackgroundTransparency = 1 }, false)
 		page.Visible = true
 		if instant then
-			page.GroupTransparency = 0
 			page.Position = UDim2.fromOffset(0, 0)
 		else
-			page.GroupTransparency = 1
 			page.Position = UDim2.fromOffset(0, 12)
-			Tween(page, { GroupTransparency = 0, Position = UDim2.fromOffset(0, 0) }, 0.28, Enum.EasingStyle.Quint)
+			Tween(page, { Position = UDim2.fromOffset(0, 0) }, 0.28, Enum.EasingStyle.Quint)
+			self.Window:_FadePage()
 		end
 	else
 		Apply(self._icon, { ImageColor3 = Theme.TextDim }, true, 0.2)
@@ -1256,7 +1257,7 @@ function Window:CreateTab(config)
 	end)
 
 	-- Page with two scrolling columns ---------------------------------
-	local page = New("CanvasGroup", {
+	local page = New("Frame", {
 		Name = "Page_" .. tab.Name,
 		Size = UDim2.fromScale(1, 1),
 		BackgroundTransparency = 1,
@@ -1348,6 +1349,43 @@ function Window:_UpdateWatermark(visible, instant)
 	end)
 end
 
+-- Fades the whole window using a background-coloured cover instead of a
+-- CanvasGroup. CanvasGroups render to an offscreen texture, which looks
+-- blurry on high-DPI phones (especially under UIScale).
+function Window:_Fade(show, duration)
+	local cover = self._cover
+	self._fadeToken += 1
+	local token = self._fadeToken
+	cover.Visible = true
+	Tween(cover, { BackgroundTransparency = show and 1 or 0 }, duration)
+	if show then
+		task.delay(duration, function()
+			if token == self._fadeToken and cover.Parent then
+				cover.Visible = false
+			end
+		end)
+	end
+end
+
+-- Quick fade-in of the page area after a tab switch.
+function Window:_FadePage()
+	local cover = self._pageCover
+	self._pageToken += 1
+	local token = self._pageToken
+	cover.BackgroundTransparency = 0.5
+	cover.Visible = true
+	Tween(cover, { BackgroundTransparency = 1 }, 0.25)
+	task.delay(0.26, function()
+		if token == self._pageToken and cover.Parent then
+			cover.Visible = false
+		end
+	end)
+end
+
+function Window:SetKeybind(keyCode)
+	self._toggleKey = keyCode or nil
+end
+
 function Window:SetVisible(visible)
 	if self._destroyed or visible == self.Visible then
 		return
@@ -1361,10 +1399,10 @@ function Window:SetVisible(visible)
 		holder.Visible = true
 		holder.Position = home + UDim2.fromOffset(0, 10)
 		Tween(holder, { Position = home }, 0.3, Enum.EasingStyle.Quint)
-		Tween(self._main, { GroupTransparency = 0 }, 0.25)
+		self:_Fade(true, 0.25)
 		Tween(self._shadow, { BackgroundTransparency = 0.72 }, 0.25)
 	else
-		Tween(self._main, { GroupTransparency = 1 }, 0.2)
+		self:_Fade(false, 0.2)
 		Tween(self._shadow, { BackgroundTransparency = 1 }, 0.2)
 		task.delay(0.22, function()
 			if not self.Visible and not self._destroyed then
@@ -1501,7 +1539,7 @@ function Window:Destroy()
 	end
 
 	local gui = self.Gui
-	Tween(self._main, { GroupTransparency = 1 }, 0.2)
+	self:_Fade(false, 0.2)
 	Tween(self._shadow, { BackgroundTransparency = 1 }, 0.2)
 	task.delay(0.25, function()
 		gui:Destroy()
@@ -1522,6 +1560,8 @@ function Library:CreateWindow(config)
 	self._notifyOrder = 0
 	self._destroyed = false
 	self._watermarkToken = 0
+	self._fadeToken = 0
+	self._pageToken = 0
 	self.Title = config.Title or "Control Panel"
 	self.Subtitle = config.Subtitle or ""
 	self.OnClose = config.OnClose
@@ -1592,14 +1632,24 @@ function Library:CreateWindow(config)
 	}, { Corner(30) })
 	self._shadow = shadow
 
-	local main = New("CanvasGroup", {
+	local main = New("Frame", {
 		Name = "Main",
 		Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = Theme.Background,
-		GroupTransparency = 1,
+		BackgroundTransparency = 0,
 		Parent = holder,
 	}, { Corner(22), Stroke(Theme.Border, 1, 0.15) })
 	self._main = main
+
+	-- Fade cover (opaque until the intro fade starts)
+	self._cover = New("Frame", {
+		Name = "FadeCover",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Theme.Background,
+		BackgroundTransparency = 0,
+		ZIndex = 30,
+		Parent = main,
+	}, { Corner(22) })
 
 	-- Sidebar ----------------------------------------------------------
 	local sidebar = New("Frame", {
@@ -1649,6 +1699,15 @@ function Library:CreateWindow(config)
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
 		Parent = main,
+	})
+	self._pageCover = New("Frame", {
+		Name = "PageCover",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Theme.Background,
+		BackgroundTransparency = 1,
+		Visible = false,
+		ZIndex = 10,
+		Parent = self._content,
 	})
 
 	-- Drag handle (top strip) + sidebar dragging ----------------------
@@ -1753,18 +1812,23 @@ function Library:CreateWindow(config)
 		}),
 	})
 
-	-- Toggle key -------------------------------------------------------
-	if config.ToggleKey ~= false then
-		local toggleKey = config.ToggleKey or Enum.KeyCode.RightShift
-		maid:Connect(UserInputService.InputBegan, function(input, processed)
-			if not processed and input.KeyCode == toggleKey then
-				self:Toggle()
-			end
-		end)
+	-- Toggle keybind (config.Keybind; false disables; ToggleKey kept as an alias) --
+	local keybind = config.Keybind
+	if keybind == nil then
+		keybind = config.ToggleKey
 	end
+	if keybind == nil then
+		keybind = Enum.KeyCode.RightShift
+	end
+	self._toggleKey = keybind ~= false and keybind or nil
+	maid:Connect(UserInputService.InputBegan, function(input, processed)
+		if not processed and self._toggleKey and input.KeyCode == self._toggleKey then
+			self:Toggle()
+		end
+	end)
 
 	-- Fade-in ----------------------------------------------------------
-	Tween(main, { GroupTransparency = 0 }, 0.3)
+	self:_Fade(true, 0.3)
 	Tween(shadow, { BackgroundTransparency = 0.72 }, 0.3)
 	Tween(holder, { Position = UDim2.fromScale(0.5, 0.5) }, 0.4, Enum.EasingStyle.Quint)
 
